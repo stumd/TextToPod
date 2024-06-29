@@ -1,48 +1,99 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
+<head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Text to Speech Converter</title>
-  </head>
-  <body>
-    <h1>Text to Speech Converter</h1>
-    <form id="convertForm">
-      <textarea id="textInput" rows="5" cols="50" required></textarea>
-      <br />
-      <button type="submit">Convert to Speech</button>
-    </form>
-    <div id="result"></div>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-blue-600 text-white p-4">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold">Text to Speech Converter</h1>
+            <a href="/podcast" class="bg-white text-blue-600 px-4 py-2 rounded hover:bg-blue-100 transition">View Podcasts</a>
+        </div>
+    </nav>
+
+    <main class="container mx-auto mt-8 p-4">
+        <form id="convertForm" class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <div class="mb-4">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="textInput">
+                    Enter your text:
+                </label>
+                <textarea id="textInput" rows="5" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" required></textarea>
+            </div>
+            <div class="flex items-center justify-between">
+                <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Convert to Speech
+                </button>
+            </div>
+        </form>
+
+        <div id="progressContainer" class="hidden mb-4">
+            <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+            </div>
+            <p id="progressText" class="text-sm text-gray-600 mt-2"></p>
+        </div>
+
+        <div id="result" class="mt-4"></div>
+    </main>
 
     <script>
-      const form = document.getElementById("convertForm");
-      const result = document.getElementById("result");
+        const form = document.getElementById("convertForm");
+        const result = document.getElementById("result");
+        const progressContainer = document.getElementById("progressContainer");
+        const progressBar = document.getElementById("progressBar");
+        const progressText = document.getElementById("progressText");
 
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const text = document.getElementById("textInput").value;
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const text = document.getElementById("textInput").value;
 
-        const formData = new FormData();
-        formData.append("text", text);
+            const formData = new FormData();
+            formData.append("text", text);
 
-        try {
-          const response = await fetch("/convert", {
-            method: "POST",
-            body: formData,
-          });
+            progressContainer.classList.remove("hidden");
+            progressBar.style.width = "0%";
+            progressText.textContent = "Starting conversion...";
 
-          const data = await response.json();
+            try {
+                const response = await fetch("/convert", {
+                    method: "POST",
+                    body: formData,
+                });
 
-          if (data.success) {
-            result.innerHTML = `<p>Conversion successful! <a href="${data.fileName}" download>Download audio file</a></p>`;
-          } else {
-            result.innerHTML = "<p>Error: Conversion failed</p>";
-          }
-        } catch (error) {
-          console.error("Error:", error);
-          result.innerHTML = "<p>Error: Conversion failed</p>";
-        }
-      });
+                const reader = response.body.getReader();
+                let receivedLength = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const text = new TextDecoder().decode(value);
+                    const messages = text.split('\n').filter(msg => msg.trim() !== '');
+                    
+                    messages.forEach(msg => {
+                        try {
+                            const data = JSON.parse(msg);
+                            if (data.progress) {
+                                progressBar.style.width = `${data.progress}%`;
+                                progressText.textContent = `${data.status} (${data.progress}%)`;
+                            } else if (data.success) {
+                                result.innerHTML = `<p class="text-green-600">Conversion successful! <a href="${data.fileName}" class="text-blue-500 hover:underline" download>Download audio file</a></p>`;
+                            }
+                        } catch (e) {
+                            console.error("Error parsing message:", e);
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                result.innerHTML = '<p class="text-red-600">Error: Conversion failed</p>';
+            } finally {
+                progressContainer.classList.add("hidden");
+            }
+        });
     </script>
-  </body>
+</body>
 </html>

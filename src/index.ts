@@ -27,6 +27,39 @@ app.use(express.static("public"));
 
 const upload = multer({ dest: "uploads/" });
 
+// Semaphore implementation for limiting concurrent operations
+class Semaphore {
+  private permits: number;
+  private tasks: (() => void)[] = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  acquire(): Promise<() => void> {
+    return new Promise<() => void>((resolve) => {
+      const task = () => {
+        this.permits--;
+        resolve(this.release.bind(this));
+      };
+
+      if (this.permits > 0) {
+        task();
+      } else {
+        this.tasks.push(task);
+      }
+    });
+  }
+
+  private release(): void {
+    this.permits++;
+    if (this.tasks.length > 0 && this.permits > 0) {
+      const nextTask = this.tasks.shift();
+      if (nextTask) nextTask();
+    }
+  }
+}
+
 interface AudioFile {
   id: string;
   title: string;
@@ -80,7 +113,51 @@ async function generateTitle(text: string): Promise<string> {
     return "Untitled";
   }
 }
-async function textToSpeech(text: string, outputPath: string): Promise<void> {
+
+app.post("/convert", upload.none(), async (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const sendProgress = (status: string, progress: number) => {
+    res.write(`data: ${JSON.stringify({ status, progress })}\n\n`);
+  };
+
+  try {
+    const { text } = req.body;
+
+    sendProgress("Generating title", 0);
+    const title = await generateTitle(text);
+    sendProgress("Title generated", 10);
+
+    const fileName = `speech_${Date.now()}.mp3`;
+    const filePath = path.join(__dirname, "..", "public", fileName);
+
+    await textToSpeech(text, filePath, sendProgress);
+
+    const id = Date.now().toString();
+    audioFiles.push({ id, title, fileName, date: new Date() });
+
+    res.write(
+      `data: ${JSON.stringify({ success: true, fileName, title })}\n\n`,
+    );
+  } catch (error) {
+    console.error("Error:", error);
+    res.write(
+      `data: ${JSON.stringify({ success: false, error: "An error occurred during conversion" })}\n\n`,
+    );
+  } finally {
+    res.end();
+  }
+});
+
+async function textToSpeech(
+  text: string,
+  outputPath: string,
+  sendProgress: (status: string, progress: number) => void,
+): Promise<void> {
   const MAX_CHARS = 4000;
   const chunks = [];
 
@@ -88,86 +165,85 @@ async function textToSpeech(text: string, outputPath: string): Promise<void> {
     chunks.push(text.slice(i, i + MAX_CHARS));
   }
 
-  const tempFiles : string[] = [];
-  console.log('generating ' + chunks.length + ' chunks');
+  const tempFiles: string[] = [];
+  console.log("generating " + chunks.length + " chunks");
+
+  const semaphore = new Semaphore(1); // Limit concurrent API calls
 
   const generateChunk = async (chunk: string, index: number) => {
-    const response = await axios.post(
-      "https://api.openai.com/v1/audio/speech",
-      {
-        model: "tts-1",
-        input: chunk,
-        voice: "fable",
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
+    const release = await semaphore.acquire();
+    try {
+      sendProgress(
+        `Generating chunk ${index + 1}/${chunks.length}`,
+        10 + (index / chunks.length) * 70,
+      );
+      const response = await axios.post(
+        "https://api.openai.com/v1/audio/speech",
+        {
+          model: "tts-1",
+          input: chunk,
+          voice: "fable",
         },
-        responseType: "arraybuffer",
-      },
-    );
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          responseType: "arraybuffer",
+        },
+      );
 
-    const tempFilePath = path.join(__dirname, "..", "public", `temp_${index}.mp3`);
-    fs.writeFileSync(tempFilePath, response.data);
-    console.log('chunk ' + index + ' added!');
-    return tempFilePath;
+      const tempFilePath = path.join(
+        __dirname,
+        "..",
+        "public",
+        `temp_${index}.mp3`,
+      );
+      fs.writeFileSync(tempFilePath, response.data);
+      console.log("chunk " + index + " added!");
+      return tempFilePath;
+    } finally {
+      release();
+    }
   };
 
   // Generate all chunks concurrently
-  const chunkPromises = chunks.map((chunk, index) => generateChunk(chunk, index));
-  tempFiles.push(...await Promise.all(chunkPromises));
+  const chunkPromises = chunks.map((chunk, index) =>
+    generateChunk(chunk, index),
+  );
+  tempFiles.push(...(await Promise.all(chunkPromises)));
+
+  sendProgress("Merging audio files", 80);
 
   // Concatenate MP3 files using fluent-ffmpeg
   await new Promise<void>((resolve, reject) => {
-    console.log('Merging !');
     const command = ffmpeg();
-    tempFiles.forEach(file => {
+    tempFiles.forEach((file) => {
       command.input(file);
     });
     command
-      .on('error', (err) => {
-        console.error('An error occurred: ' + err.message);
+      .on("error", (err) => {
+        console.error("An error occurred: " + err.message);
         reject(err);
       })
-      .on('end', () => {
-        console.log('Merging finished !');
+      .on("end", () => {
+        console.log("Merging finished !");
         resolve();
       })
       .mergeToFile(outputPath, path.dirname(outputPath));
   });
 
+  sendProgress("Cleaning up temporary files", 90);
+
   // Clean up temp files
   tempFiles.forEach((file) => fs.unlinkSync(file));
+
+  sendProgress("Conversion complete", 100);
 }
-
-app.post("/convert", upload.none(), async (req, res) => {
-  try {
-    const { text } = req.body;
-
-    // Generate title
-    const title = await generateTitle(text);
-
-    const fileName = `speech_${Date.now()}.mp3`;
-    const filePath = path.join(__dirname, "..", "public", fileName);
-
-    await textToSpeech(text, filePath);
-    
-    const id = Date.now().toString(); // Simple unique ID
-    audioFiles.push({ id, title, fileName, date: new Date() });
-
-    res.json({ success: true, fileName, title });
-  } catch (error) {
-    console.error("Error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "An error occurred during conversion" });
-  }
-});
 
 app.delete("/delete/:id", (req, res) => {
   const { id } = req.params;
-  const index = audioFiles.findIndex(file => file.id === id);
+  const index = audioFiles.findIndex((file) => file.id === id);
 
   if (index === -1) {
     return res.status(404).json({ success: false, error: "File not found" });
@@ -180,7 +256,9 @@ app.delete("/delete/:id", (req, res) => {
   fs.unlink(filePath, (err) => {
     if (err) {
       console.error("Error deleting file:", err);
-      return res.status(500).json({ success: false, error: "Error deleting file" });
+      return res
+        .status(500)
+        .json({ success: false, error: "Error deleting file" });
     }
 
     // Remove file from audioFiles array
@@ -188,7 +266,6 @@ app.delete("/delete/:id", (req, res) => {
     res.json({ success: true });
   });
 });
-
 
 app.get("/feed", (req, res) => {
   const feed = new RSS({
