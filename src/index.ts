@@ -80,7 +80,6 @@ async function generateTitle(text: string): Promise<string> {
     return "Untitled";
   }
 }
-
 async function textToSpeech(text: string, outputPath: string): Promise<void> {
   const MAX_CHARS = 4000;
   const chunks = [];
@@ -89,10 +88,10 @@ async function textToSpeech(text: string, outputPath: string): Promise<void> {
     chunks.push(text.slice(i, i + MAX_CHARS));
   }
 
-  const tempFiles = [];
-  console.log('generating'+chunks.length!+'chunks');
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
+  const tempFiles : string[] = [];
+  console.log('generating ' + chunks.length + ' chunks');
+
+  const generateChunk = async (chunk: string, index: number) => {
     const response = await axios.post(
       "https://api.openai.com/v1/audio/speech",
       {
@@ -109,14 +108,19 @@ async function textToSpeech(text: string, outputPath: string): Promise<void> {
       },
     );
 
-    const tempFilePath = path.join(__dirname, "..", "public", `temp_${i}.mp3`);
+    const tempFilePath = path.join(__dirname, "..", "public", `temp_${index}.mp3`);
     fs.writeFileSync(tempFilePath, response.data);
-    tempFiles.push(tempFilePath);
-    console.log('chunk added!');
-  }
+    console.log('chunk ' + index + ' added!');
+    return tempFilePath;
+  };
+
+  // Generate all chunks concurrently
+  const chunkPromises = chunks.map((chunk, index) => generateChunk(chunk, index));
+  tempFiles.push(...await Promise.all(chunkPromises));
 
   // Concatenate MP3 files using fluent-ffmpeg
   await new Promise<void>((resolve, reject) => {
+    console.log('Merging !');
     const command = ffmpeg();
     tempFiles.forEach(file => {
       command.input(file);
