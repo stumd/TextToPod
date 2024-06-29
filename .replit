@@ -1,0 +1,22 @@
+run = "tsx src/index.ts"
+entrypoint = "src/index.ts"
+hidden = [".config", "package-lock.json", "tsconfig.json"]
+modules = ["nodejs-20"]
+
+[nix]
+channel = "stable-23_11"
+
+[nix.packages]
+ffmpeg = "ffmpeg"
+
+[gitHubImport]
+requiredFiles = [".replit", "replit.nix", ".config"]
+
+[deployment]
+run = ["tsx", "src/index.ts"]
+deploymentTarget = "cloudrun"
+ignorePorts = false
+
+[[ports]]
+localPort = 3000
+externalPort = 80

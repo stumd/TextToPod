@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Text to Speech Converter</title>
+  </head>
+  <body>
+    <h1>Text to Speech Converter</h1>
+    <form id="convertForm">
+      <textarea id="textInput" rows="5" cols="50" required></textarea>
+      <br />
+      <button type="submit">Convert to Speech</button>
+    </form>
+    <div id="result"></div>
+
+    <script>
+      const form = document.getElementById("convertForm");
+      const result = document.getElementById("result");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const text = document.getElementById("textInput").value;
+
+        const formData = new FormData();
+        formData.append("text", text);
+
+        try {
+          const response = await fetch("/convert", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await response.json();
+
+          if (data.success) {
+            result.innerHTML = `<p>Conversion successful! <a href="${data.fileName}" download>Download audio file</a></p>`;
+          } else {
+            result.innerHTML = "<p>Error: Conversion failed</p>";
+          }
+        } catch (error) {
+          console.error("Error:", error);
+          result.innerHTML = "<p>Error: Conversion failed</p>";
+        }
+      });
+    </script>
+  </body>
+</html>
